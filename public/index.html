@@ -1,0 +1,623 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>DumpAnalyzer — z/OS SYSDUMP &amp; CEEDUMP Analysis</title>
+<style>
+:root{
+  --bg:#0d1117;--surface:#161b22;--border:#30363d;--text:#c9d1d9;
+  --muted:#8b949e;--green:#3fb950;--red:#f85149;--yellow:#d29922;
+  --blue:#58a6ff;--cyan:#39d353;--purple:#bc8cff;--orange:#ffa657;
+}
+*{box-sizing:border-box;margin:0;padding:0;}
+body{background:var(--bg);color:var(--text);font-family:'Segoe UI',system-ui,sans-serif;font-size:13px;min-height:100vh;display:flex;flex-direction:column;}
+
+/* ── TOPBAR ──────────────────────────────────────────────────────────────── */
+.topbar{background:var(--surface);border-bottom:2px solid var(--border);display:flex;align-items:center;padding:0 24px;height:56px;flex-shrink:0;gap:16px;position:sticky;top:0;z-index:50;}
+.topbar-logo{font-size:18px;font-weight:800;color:var(--cyan);letter-spacing:.5px;}
+.topbar-logo span{color:var(--muted);font-weight:400;font-size:12px;margin-left:6px;}
+.topbar-spacer{flex:1;}
+.topbar-badge{font-size:10px;color:var(--muted);background:#21262d;border:1px solid var(--border);border-radius:12px;padding:3px 10px;font-weight:600;letter-spacing:.4px;}
+.upload-topbtn{display:inline-flex;align-items:center;gap:6px;padding:7px 18px;border-radius:6px;font-size:12px;font-weight:700;cursor:pointer;border:1px solid var(--orange);background:transparent;color:var(--orange);transition:background .15s,color .15s;}
+.upload-topbtn:hover{background:#2e1a00;color:#ffbd68;}
+.new-btn{display:inline-flex;align-items:center;gap:6px;padding:7px 18px;border-radius:6px;font-size:12px;font-weight:700;cursor:pointer;border:1px solid var(--border);background:#21262d;color:var(--text);transition:opacity .15s;display:none;}
+.new-btn:hover{opacity:.8;}
+#uploadInput{display:none;}
+
+/* ── HERO (empty state) ──────────────────────────────────────────────────── */
+#hero{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:40px 20px;text-align:center;}
+.hero-icon{font-size:64px;margin-bottom:20px;opacity:.7;}
+.hero-title{font-size:26px;font-weight:700;color:var(--text);margin-bottom:8px;}
+.hero-sub{font-size:14px;color:var(--muted);max-width:480px;line-height:1.6;margin-bottom:32px;}
+.drop-zone{border:2px dashed var(--border);border-radius:12px;padding:40px 60px;cursor:pointer;transition:border-color .2s,background .2s;background:#111619;}
+.drop-zone:hover,.drop-zone.drag-over{border-color:var(--blue);background:#0a1420;}
+.drop-zone-text{font-size:14px;color:var(--muted);margin-top:10px;}
+.drop-btn{display:inline-flex;align-items:center;gap:8px;padding:10px 28px;border-radius:8px;font-size:14px;font-weight:700;cursor:pointer;border:1px solid var(--orange);background:transparent;color:var(--orange);margin-bottom:10px;}
+.drop-btn:hover{background:#2e1a00;}
+.supported-types{font-size:11px;color:var(--muted);margin-top:16px;opacity:.7;}
+.feature-chips{display:flex;flex-wrap:wrap;gap:10px;justify-content:center;margin-top:32px;max-width:600px;}
+.chip{font-size:11px;padding:5px 12px;border-radius:20px;background:var(--surface);border:1px solid var(--border);color:var(--muted);}
+.chip span{color:var(--cyan);font-weight:700;}
+
+/* ── LOADING ─────────────────────────────────────────────────────────────── */
+#loadingState{flex:1;display:none;flex-direction:column;align-items:center;justify-content:center;gap:16px;}
+.spin{width:36px;height:36px;border:3px solid var(--border);border-top-color:var(--blue);border-radius:50%;animation:spin .8s linear infinite;}
+@keyframes spin{to{transform:rotate(360deg);}}
+.loading-text{color:var(--muted);font-size:14px;}
+
+/* ── ERROR BANNER ────────────────────────────────────────────────────────── */
+#errorBanner{display:none;margin:20px 24px 0;padding:12px 18px;border-radius:8px;background:#2e0e0e;border:1px solid #6e2020;color:var(--red);font-size:12px;}
+
+/* ── ANALYSIS PAGE ───────────────────────────────────────────────────────── */
+#analysisPage{display:none;flex:1;padding:20px 24px 40px;}
+
+/* File header bar */
+.file-header{display:flex;align-items:center;gap:12px;padding:12px 18px;background:var(--surface);border:1px solid var(--border);border-radius:8px;margin-bottom:20px;}
+.fh-name{font-family:monospace;font-size:13px;color:var(--orange);font-weight:700;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.fh-badge{font-size:10px;font-weight:700;padding:3px 8px;border-radius:4px;flex-shrink:0;}
+.fh-cee{background:#0e2e1a;color:var(--green);border:1px solid #1f6336;}
+.fh-sys{background:#2e0e0e;color:var(--red);border:1px solid #6e2020;}
+.fh-unk{background:#21262d;color:var(--muted);border:1px solid var(--border);}
+.raw-btn{padding:5px 12px;border-radius:5px;font-size:11px;font-weight:600;cursor:pointer;border:1px solid var(--border);background:#21262d;color:var(--muted);flex-shrink:0;}
+.raw-btn:hover{color:var(--text);}
+
+/* ── SUMMARY INFO GRID ───────────────────────────────────────────────────── */
+.info-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(175px,1fr));gap:10px;margin-bottom:18px;}
+.info-item{background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:10px 14px;}
+.info-item-label{font-size:9px;color:var(--muted);text-transform:uppercase;letter-spacing:.6px;margin-bottom:4px;}
+.info-item-value{font-size:15px;font-weight:700;font-family:monospace;}
+.info-item-value.abend{color:var(--red);}
+.info-item-value.prog{color:var(--orange);}
+.info-item-value.stmt{color:var(--yellow);}
+.info-item-value.type{color:var(--blue);}
+
+/* ── SECTION HEADERS ─────────────────────────────────────────────────────── */
+.section-hdr{font-size:10px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.7px;margin:18px 0 10px;border-bottom:1px solid var(--border);padding-bottom:5px;}
+
+/* ── ROOT CAUSE BOX ──────────────────────────────────────────────────────── */
+.rc-box{border:2px solid var(--red);border-radius:10px;padding:16px 20px;margin-bottom:18px;background:#180808;}
+.rc-box.rc-warn{border-color:var(--yellow);background:#191400;}
+.rc-box-title{font-size:16px;font-weight:700;color:var(--red);margin-bottom:12px;font-family:monospace;}
+.rc-box.rc-warn .rc-box-title{color:var(--yellow);}
+.rc-rows{display:flex;flex-direction:column;gap:6px;}
+.rc-row{display:flex;gap:12px;align-items:baseline;flex-wrap:wrap;}
+.rc-label{font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;min-width:105px;flex-shrink:0;}
+.rc-val{font-family:monospace;font-size:12px;color:var(--text);}
+.rc-val.bad{color:var(--red);font-weight:700;}
+.rc-narrative{font-size:12px;color:var(--text);line-height:1.65;margin-top:12px;border-top:1px solid rgba(255,255,255,.08);padding-top:12px;}
+
+/* ── TECHNICAL ANALYSIS ──────────────────────────────────────────────────── */
+.tech-table{width:100%;border-collapse:collapse;font-size:11px;margin-bottom:10px;}
+.tech-table td{padding:6px 10px;border-bottom:1px solid var(--border);vertical-align:top;}
+.tech-table td:first-child{color:var(--muted);font-size:10px;text-transform:uppercase;width:175px;white-space:nowrap;}
+.tech-table td:last-child{font-family:monospace;color:var(--cyan);word-break:break-all;}
+.tech-table .hl td:last-child{color:var(--yellow);font-weight:700;}
+.instr-box{background:#060e1a;border:1px solid var(--blue);border-radius:8px;padding:12px 16px;margin-bottom:10px;}
+.instr-raw{font-size:18px;font-weight:700;color:var(--yellow);letter-spacing:4px;margin-bottom:10px;font-family:Consolas,monospace;}
+.instr-dr{display:flex;gap:10px;margin-bottom:5px;align-items:baseline;}
+.instr-key{color:var(--muted);font-size:10px;min-width:80px;flex-shrink:0;text-transform:uppercase;}
+.instr-val{font-family:monospace;font-size:11px;color:var(--cyan);}
+.instr-detail{font-size:11px;color:var(--text);line-height:1.6;margin-top:10px;border-top:1px solid var(--border);padding-top:9px;}
+.abend-techbox{background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:10px 14px;font-size:11px;color:var(--text);line-height:1.6;margin-top:8px;}
+
+/* ── SOURCE VIEW ─────────────────────────────────────────────────────────── */
+.source-view{font-family:Consolas,monospace;font-size:11px;background:#080d12;border:1px solid var(--border);border-radius:8px;overflow:hidden;}
+.source-line{display:flex;padding:2px 10px;gap:12px;line-height:1.7;}
+.source-line:hover{background:#1c2128;}
+.source-line.target{background:#2e1a00;border-left:3px solid var(--orange);}
+.source-linenum{color:var(--muted);min-width:36px;text-align:right;user-select:none;font-size:10px;}
+.source-text{color:var(--text);flex:1;}
+.source-line.target .source-text{color:var(--orange);}
+.abend-marker{color:var(--red);font-weight:700;font-size:10px;margin-left:10px;}
+
+/* ── TRACEBACK ───────────────────────────────────────────────────────────── */
+.trace-table{width:100%;border-collapse:collapse;font-size:11px;}
+.trace-table th{text-align:left;padding:6px 10px;color:var(--muted);border-bottom:1px solid var(--border);font-size:10px;text-transform:uppercase;}
+.trace-row td{padding:6px 10px;border-bottom:1px solid var(--border);font-family:monospace;}
+.trace-row:last-child td{border-bottom:none;}
+.trace-row td:first-child{color:var(--orange);}
+.trace-row td:nth-child(2){color:var(--blue);}
+.trace-row td:nth-child(3){color:var(--muted);}
+
+/* ── WORKING STORAGE / LINKAGE ───────────────────────────────────────────── */
+.ws-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:10px;}
+.ws-item{background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:8px 12px;}
+.ws-name{font-family:monospace;font-size:11px;color:var(--cyan);margin-bottom:5px;}
+.ws-val{display:flex;align-items:baseline;gap:10px;}
+.ws-val-text{font-family:monospace;font-size:12px;font-weight:700;}
+.ws-val-text.invalid{color:var(--red);}
+.ws-val-text.ok{color:var(--green);}
+.ws-type{font-size:9px;color:var(--muted);margin-left:auto;}
+
+/* ── PSW ─────────────────────────────────────────────────────────────────── */
+.psw-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:10px;}
+.psw-item{background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:8px 12px;}
+.psw-label{font-size:9px;color:var(--muted);text-transform:uppercase;margin-bottom:4px;}
+.psw-value{font-family:monospace;font-size:13px;font-weight:700;color:var(--yellow);}
+
+/* ── REGISTERS ───────────────────────────────────────────────────────────── */
+.reg-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:6px;}
+.reg-cell{background:var(--surface);border:1px solid var(--border);border-radius:5px;padding:5px 10px;display:flex;justify-content:space-between;font-family:monospace;font-size:11px;}
+.reg-name{color:var(--muted);}
+.reg-val{color:var(--cyan);}
+
+/* ── FIX RECOMMENDATIONS ─────────────────────────────────────────────────── */
+.fix-sublabel{font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.5px;margin:14px 0 7px;}
+.fix-sublabel.orange{color:var(--orange);}
+.fix-sublabel.green{color:var(--green);}
+.fix-sublabel.blue{color:var(--blue);}
+.step-item{display:flex;gap:10px;padding:6px 0;border-bottom:1px dashed var(--border);align-items:flex-start;font-size:11px;}
+.step-num{background:var(--orange);color:#000;font-weight:700;font-size:10px;padding:2px 8px;border-radius:10px;flex-shrink:0;min-width:24px;text-align:center;line-height:1.5;}
+.step-text{font-family:monospace;color:var(--text);flex:1;line-height:1.5;}
+.cobol-fix-block{font-family:Consolas,monospace;font-size:11px;background:#080d12;border:1px solid var(--green);border-radius:6px;padding:12px 16px;white-space:pre;overflow-x:auto;color:#7dd3a8;line-height:1.5;margin-bottom:8px;}
+.upstream-note{background:#141c24;border:1px solid var(--border);border-left:3px solid var(--blue);border-radius:0 6px 6px 0;padding:10px 14px;font-size:11px;color:var(--text);line-height:1.6;}
+
+/* ── INTEGRITY FLAGS ─────────────────────────────────────────────────────── */
+.int-flag{display:flex;gap:12px;padding:8px 12px;border-radius:6px;margin-bottom:8px;font-size:11px;line-height:1.5;}
+.int-flag.warn{background:#2a1800;border:1px solid var(--yellow);}
+.int-flag.info{background:#091424;border:1px solid var(--blue);}
+.int-icon{font-size:15px;flex-shrink:0;}
+.int-msg{flex:1;color:var(--text);}
+
+/* ── STORAGE DUMP ────────────────────────────────────────────────────────── */
+.storage-dump{font-family:Consolas,monospace;font-size:11px;background:#080d12;border:1px solid var(--border);border-radius:6px;padding:10px 14px;max-height:200px;overflow-y:auto;}
+.storage-row{padding:2px 0;color:var(--muted);}
+
+/* ── DROP OVERLAY ────────────────────────────────────────────────────────── */
+#dropOverlay{display:none;position:fixed;inset:0;background:rgba(13,17,23,.9);z-index:200;align-items:center;justify-content:center;flex-direction:column;gap:16px;border:3px dashed var(--blue);}
+#dropOverlay.active{display:flex;}
+#dropOverlay .do-icon{font-size:56px;}
+#dropOverlay .do-text{font-size:18px;color:var(--blue);font-weight:700;}
+
+/* ── RAW MODAL ───────────────────────────────────────────────────────────── */
+#rawModal{display:none;position:fixed;inset:0;background:rgba(0,0,0,.85);z-index:300;align-items:center;justify-content:center;}
+#rawModal.active{display:flex;}
+.raw-modal-inner{background:var(--surface);border:1px solid var(--border);border-radius:10px;width:90vw;max-width:900px;height:80vh;display:flex;flex-direction:column;}
+.raw-modal-hdr{display:flex;align-items:center;padding:12px 18px;border-bottom:1px solid var(--border);}
+.raw-modal-title{font-size:12px;font-weight:700;color:var(--text);flex:1;}
+.raw-close{padding:4px 12px;border-radius:5px;font-size:12px;cursor:pointer;border:1px solid var(--border);background:#21262d;color:var(--muted);}
+.raw-modal-body{flex:1;overflow-y:auto;padding:14px 18px;}
+#rawContent{font-family:Consolas,monospace;font-size:10px;color:#7dd3a8;white-space:pre-wrap;line-height:1.5;}
+
+::-webkit-scrollbar{width:6px;height:6px;}
+::-webkit-scrollbar-track{background:transparent;}
+::-webkit-scrollbar-thumb{background:var(--border);border-radius:3px;}
+</style>
+</head>
+<body>
+
+<!-- ── TOPBAR ───────────────────────────────────────────────────────────────── -->
+<div class="topbar">
+  <div class="topbar-logo">DumpAnalyzer<span>z/OS SYSDUMP &amp; CEEDUMP</span></div>
+  <div class="topbar-spacer"></div>
+  <span class="topbar-badge">IBM z/OS · COBOL · LE</span>
+  <button class="new-btn" id="newBtn" onclick="resetToHero()">&#8592; New Analysis</button>
+  <button class="upload-topbtn" id="topUploadBtn" onclick="document.getElementById('uploadInput').click()">
+    &#8613; Upload Dump
+  </button>
+  <input type="file" id="uploadInput" accept=".dmp,.txt,.log,.cee,.sys,.sdmp" onchange="handleFileSelect(this.files)">
+</div>
+
+<!-- ── DROP OVERLAY ─────────────────────────────────────────────────────────── -->
+<div id="dropOverlay">
+  <div class="do-icon">&#8613;</div>
+  <div class="do-text">Drop SYSDUMP / CEEDUMP file to analyze</div>
+</div>
+
+<!-- ── ERROR BANNER ─────────────────────────────────────────────────────────── -->
+<div id="errorBanner"></div>
+
+<!-- ── HERO (empty state) ───────────────────────────────────────────────────── -->
+<div id="hero">
+  <div class="hero-icon">&#128202;</div>
+  <div class="hero-title">z/OS Dump Analyzer</div>
+  <div class="hero-sub">Upload a SYSDUMP or CEEDUMP file from any z/OS COBOL abend and get instant root-cause analysis, instruction decode, PSW arithmetic, and actionable fix recommendations.</div>
+
+  <div class="drop-zone" id="heroDropZone" onclick="document.getElementById('uploadInput').click()">
+    <button class="drop-btn" onclick="event.stopPropagation();document.getElementById('uploadInput').click()">
+      &#8613;&nbsp; Choose File
+    </button>
+    <div class="drop-zone-text">or drag &amp; drop your dump file here</div>
+  </div>
+
+  <div class="supported-types">Supports: SYSDUMP (IEA992I / IEA995I / real z/OS format) &amp; CEEDUMP (CEE3DMP) &nbsp;&#183;&nbsp; Max 50 MB</div>
+
+  <div class="feature-chips">
+    <div class="chip"><span>&#10003;</span> Root Cause Analysis</div>
+    <div class="chip"><span>&#10003;</span> PSW Arithmetic Decode</div>
+    <div class="chip"><span>&#10003;</span> z/Architecture Instruction Decode</div>
+    <div class="chip"><span>&#10003;</span> COBOL Fix Recommendations</div>
+    <div class="chip"><span>&#10003;</span> CEE3207S Field Extraction</div>
+    <div class="chip"><span>&#10003;</span> Integrity Flag Detection</div>
+  </div>
+</div>
+
+<!-- ── LOADING ───────────────────────────────────────────────────────────────── -->
+<div id="loadingState">
+  <div class="spin"></div>
+  <div class="loading-text">Analyzing dump file…</div>
+</div>
+
+<!-- ── ANALYSIS PAGE ────────────────────────────────────────────────────────── -->
+<div id="analysisPage">
+  <div class="file-header" id="fileHeader"></div>
+  <div id="analysisContent"></div>
+</div>
+
+<!-- ── RAW MODAL ────────────────────────────────────────────────────────────── -->
+<div id="rawModal">
+  <div class="raw-modal-inner">
+    <div class="raw-modal-hdr">
+      <span class="raw-modal-title">Raw Dump Text</span>
+      <button class="raw-close" onclick="closeRaw()">&#10005; Close</button>
+    </div>
+    <div class="raw-modal-body"><pre id="rawContent"></pre></div>
+  </div>
+</div>
+
+<script>
+'use strict';
+
+let currentDump = null;
+
+// ── Init ──────────────────────────────────────────────────────────────────────
+window.addEventListener('DOMContentLoaded', () => {
+  setupDragDrop();
+});
+
+// ── Drag & drop ───────────────────────────────────────────────────────────────
+function setupDragDrop() {
+  const overlay = document.getElementById('dropOverlay');
+  const heroZone = document.getElementById('heroDropZone');
+  let dragCounter = 0;
+
+  document.addEventListener('dragenter', e => {
+    if (e.dataTransfer && e.dataTransfer.types.includes('Files')) {
+      dragCounter++;
+      overlay.classList.add('active');
+    }
+  });
+  document.addEventListener('dragleave', () => {
+    dragCounter = Math.max(0, dragCounter - 1);
+    if (!dragCounter) overlay.classList.remove('active');
+  });
+  document.addEventListener('dragover', e => e.preventDefault());
+  document.addEventListener('drop', e => {
+    e.preventDefault();
+    dragCounter = 0;
+    overlay.classList.remove('active');
+    if (e.dataTransfer && e.dataTransfer.files.length) handleFileSelect(e.dataTransfer.files);
+  });
+
+  heroZone.addEventListener('dragover', e => { e.preventDefault(); heroZone.classList.add('drag-over'); });
+  heroZone.addEventListener('dragleave', () => heroZone.classList.remove('drag-over'));
+  heroZone.addEventListener('drop', e => {
+    e.preventDefault(); e.stopPropagation();
+    heroZone.classList.remove('drag-over');
+    if (e.dataTransfer && e.dataTransfer.files.length) handleFileSelect(e.dataTransfer.files);
+  });
+}
+
+// ── File upload handler ───────────────────────────────────────────────────────
+async function handleFileSelect(files) {
+  if (!files || !files.length) return;
+  const file = files[0];
+  showLoading();
+
+  const fd = new FormData();
+  fd.append('dumpFile', file);
+
+  try {
+    const r = await fetch('/api/analyze', { method: 'POST', body: fd });
+    const data = await r.json();
+    if (!r.ok) throw new Error(data.error || 'Analysis failed');
+    currentDump = data;
+    showAnalysis(data);
+  } catch (e) {
+    showError(e.message);
+  }
+  document.getElementById('uploadInput').value = '';
+}
+
+// ── State transitions ─────────────────────────────────────────────────────────
+function showLoading() {
+  document.getElementById('hero').style.display = 'none';
+  document.getElementById('errorBanner').style.display = 'none';
+  document.getElementById('analysisPage').style.display = 'none';
+  document.getElementById('loadingState').style.display = 'flex';
+  document.getElementById('newBtn').style.display = 'none';
+}
+
+function showError(msg) {
+  document.getElementById('loadingState').style.display = 'none';
+  document.getElementById('hero').style.display = 'flex';
+  const eb = document.getElementById('errorBanner');
+  eb.style.display = 'block';
+  eb.textContent = '⚠ ' + msg;
+}
+
+function showAnalysis(dump) {
+  document.getElementById('loadingState').style.display = 'none';
+  document.getElementById('hero').style.display = 'none';
+  document.getElementById('errorBanner').style.display = 'none';
+  document.getElementById('newBtn').style.display = 'inline-flex';
+  document.getElementById('analysisPage').style.display = 'block';
+  renderFileHeader(dump);
+  document.getElementById('analysisContent').innerHTML = buildAnalysisHTML(dump);
+}
+
+function resetToHero() {
+  currentDump = null;
+  document.getElementById('analysisPage').style.display = 'none';
+  document.getElementById('loadingState').style.display = 'none';
+  document.getElementById('errorBanner').style.display = 'none';
+  document.getElementById('hero').style.display = 'flex';
+  document.getElementById('newBtn').style.display = 'none';
+}
+
+// ── File header bar ───────────────────────────────────────────────────────────
+function renderFileHeader(dump) {
+  const type  = dump.type || 'UNKNOWN';
+  const bCls  = type === 'CEEDUMP' ? 'fh-cee' : type === 'SYSDUMP' ? 'fh-sys' : 'fh-unk';
+  const label = type === 'CEEDUMP' ? 'CEEDUMP' : type === 'SYSDUMP' ? 'SYSDUMP' : 'UNKNOWN';
+  document.getElementById('fileHeader').innerHTML =
+    `<span class="fh-badge ${bCls}">${label}</span>` +
+    `<span class="fh-name">${esc(dump.filename || 'uploaded file')}</span>` +
+    `<button class="raw-btn" onclick="openRaw()">View Raw</button>`;
+}
+
+// ── Raw modal ─────────────────────────────────────────────────────────────────
+function openRaw() {
+  if (!currentDump) return;
+  document.getElementById('rawContent').textContent = currentDump.raw || '';
+  document.getElementById('rawModal').classList.add('active');
+}
+function closeRaw() {
+  document.getElementById('rawModal').classList.remove('active');
+}
+document.addEventListener('keydown', e => { if (e.key === 'Escape') closeRaw(); });
+
+// ── Main analysis builder ─────────────────────────────────────────────────────
+function buildAnalysisHTML(dump) {
+  const isCEE = dump.type === 'CEEDUMP';
+  const s = dump.summary || {};
+  const a = dump.analysis || null;
+  const html = [];
+
+  // Summary grid
+  html.push(`<div class="info-grid">
+    <div class="info-item"><div class="info-item-label">Abend Code</div><div class="info-item-value abend">${esc(s.abendCode||'—')}</div></div>
+    <div class="info-item"><div class="info-item-label">Program</div><div class="info-item-value prog">${esc(s.programName||'—')}</div></div>
+    <div class="info-item"><div class="info-item-label">Dump Type</div><div class="info-item-value type">${esc(dump.type||'—')}</div></div>
+    <div class="info-item"><div class="info-item-label">Statement</div><div class="info-item-value stmt">${esc(s.statement ? '#'+s.statement : '—')}</div></div>
+    <div class="info-item"><div class="info-item-label">Offset</div><div class="info-item-value" style="color:var(--purple);font-size:12px;">${esc(s.offset||'—')}</div></div>
+    <div class="info-item"><div class="info-item-label">Timestamp</div><div class="info-item-value" style="color:var(--muted);font-size:11px;">${esc(s.timestamp||'—')}</div></div>
+    ${s.jobName?`<div class="info-item"><div class="info-item-label">Job Name</div><div class="info-item-value" style="color:var(--cyan);font-size:12px;">${esc(s.jobName)}</div></div>`:''}
+    ${s.stepName?`<div class="info-item"><div class="info-item-label">Step Name</div><div class="info-item-value" style="color:var(--cyan);font-size:12px;">${esc(s.stepName)}</div></div>`:''}
+  </div>`);
+
+  // Root cause box
+  if (a) html.push(renderRootCauseBox(a));
+
+  // COBOL source context
+  if (dump.cobolSource && dump.cobolSource.context && dump.cobolSource.context.length) {
+    html.push(`<div class="section-hdr">&#128196; COBOL Source — ${esc(dump.cobolSource.programName)} at Statement ${dump.cobolSource.stmtNumber}</div>`);
+    html.push('<div class="source-view">');
+    dump.cobolSource.context.forEach(l => {
+      const cls = l.isTarget ? ' target' : '';
+      const marker = l.isTarget ? '<span class="abend-marker">&#9658; ABEND HERE</span>' : '';
+      html.push(`<div class="source-line${cls}">
+        <span class="source-linenum">${l.lineNum}</span>
+        <span class="source-text">${escHtml(l.text)}${marker}</span>
+      </div>`);
+    });
+    html.push('</div>');
+  }
+
+  // Technical analysis (PSW + instruction)
+  if (a) html.push(renderTechnicalAnalysis(a));
+
+  // CEEDUMP specifics
+  if (isCEE) {
+    if (dump.conditions && dump.conditions.length) {
+      html.push('<div class="section-hdr">&#9888; LE Conditions</div>');
+      dump.conditions.forEach(c => {
+        html.push(`<div style="font-family:monospace;font-size:11px;padding:8px 12px;background:var(--surface);border:1px solid var(--border);border-radius:6px;margin-bottom:8px;color:var(--yellow);">${escHtml(c.token||'')} &nbsp; ${escHtml(c.message||'')}</div>`);
+      });
+    }
+    if (dump.traceback && dump.traceback.length) {
+      html.push('<div class="section-hdr">&#128204; Call Chain Traceback</div>');
+      html.push('<table class="trace-table"><thead><tr><th>DSA Address</th><th>Program Unit</th><th>Type</th><th>Statement</th><th>Offset</th></tr></thead><tbody>');
+      dump.traceback.forEach(t => {
+        html.push(`<tr class="trace-row"><td>${esc(t.dsaAddr||'')}</td><td>${esc(t.programUnit||'')}</td><td>${esc(t.puType||'')}</td><td>${esc(t.statement!=null?t.statement:'--')}</td><td>${esc(t.offset||'')}</td></tr>`);
+      });
+      html.push('</tbody></table>');
+    }
+    if (dump.workingStorage && dump.workingStorage.length) {
+      html.push('<div class="section-hdr">&#128190; Working Storage at Abend</div>');
+      html.push('<div class="ws-grid">');
+      dump.workingStorage.forEach(w => {
+        const isInvalid = (w.value||'').toUpperCase().includes('INVALID') || (w.value||'').toLowerCase().includes('non-numeric');
+        html.push(`<div class="ws-item"><div class="ws-name">${esc((w.definition||'').split(/\s+/)[1]||'')}</div>
+          <div class="ws-val"><span class="ws-val-text ${isInvalid?'invalid':'ok'}">${esc(w.value||w.definition||'')}</span></div></div>`);
+      });
+      html.push('</div>');
+    }
+    if (dump.linkage && dump.linkage.length) {
+      html.push('<div class="section-hdr">&#128279; Linkage Section</div>');
+      html.push('<div class="ws-grid">');
+      dump.linkage.forEach(w => {
+        const isInvalid = (w.value||'').toUpperCase().includes('INVALID') || (w.value||'').toLowerCase().includes('non-numeric');
+        html.push(`<div class="ws-item"><div class="ws-name">${esc(w.field||'')}</div>
+          <div class="ws-val"><span class="ws-val-text ${isInvalid?'invalid':'ok'}">${esc(w.value||'')}</span></div></div>`);
+      });
+      html.push('</div>');
+    }
+  }
+
+  // SYSDUMP specifics
+  if (!isCEE) {
+    if (dump.psw && dump.psw.word1) {
+      html.push('<div class="section-hdr">&#128246; Program Status Word</div>');
+      html.push('<div class="psw-grid">');
+      [['PSW Word 1', dump.psw.word1], ['PSW Word 2', dump.psw.word2],
+       ['ILC (bytes)', dump.psw.ilc], ['Interrupt Code', dump.psw.intcode]].forEach(([label, val]) => {
+        html.push(`<div class="psw-item"><div class="psw-label">${label}</div><div class="psw-value">${esc(val!=null?val:'—')}</div></div>`);
+      });
+      html.push('</div>');
+    }
+    if (dump.registers && Object.keys(dump.registers).length) {
+      html.push('<div class="section-hdr">&#128290; General Purpose Registers</div>');
+      html.push('<div class="reg-grid">');
+      Object.entries(dump.registers).forEach(([k, v]) => {
+        html.push(`<div class="reg-cell"><span class="reg-name">${esc(k)}</span><span class="reg-val">${esc(v)}</span></div>`);
+      });
+      html.push('</div>');
+    }
+    if (dump.storageRows && dump.storageRows.length) {
+      html.push('<div class="section-hdr">&#128455; Storage at PSW</div>');
+      html.push('<div class="storage-dump">');
+      dump.storageRows.forEach(r => {
+        const data = Array.isArray(r.data) ? r.data.join(' ') : String(r.data||'');
+        html.push(`<div class="storage-row">${esc(r.address||'')}  ${esc(data)}</div>`);
+      });
+      html.push('</div>');
+    }
+  }
+
+  // Fix recommendations
+  if (a && (a.immediateSteps && a.immediateSteps.length || a.cobolFix || a.upstreamFix)) {
+    html.push(renderFixRecommendations(a));
+  }
+
+  // Integrity flags
+  if (a && a.integrityFlags && a.integrityFlags.length) {
+    html.push(renderIntegrityFlags(a.integrityFlags));
+  }
+
+  return html.join('');
+}
+
+// ── Root cause box ────────────────────────────────────────────────────────────
+function renderRootCauseBox(a) {
+  const isWarn = a.abendCode === 'S322' || a.abendCode === 'S806';
+  const boxCls = isWarn ? 'rc-box rc-warn' : 'rc-box';
+  const title  = `${esc(a.abendCode)} — Root Cause Analysis`;
+  const rows   = [];
+  const ad = a.abendDetail;
+  const pc = a.progCtx;
+
+  rows.push(['Abend', `${esc(a.abendCode)}${ad?' — '+esc(ad.shortName):''}`]);
+  rows.push(['Program', `${esc(a.program)} at Statement ${esc(a.statement?'#'+a.statement:'?')}, Offset X'${esc(a.offset||'?')}'`]);
+  if (pc && pc.badField) rows.push(['Bad Field', `<span class="rc-val bad">${esc(pc.badField)}</span>`]);
+  if (pc && pc.badValue) rows.push(['Bad Value', `<span class="rc-val bad">${esc(pc.badValue)}</span>`]);
+  if (pc && pc.cobolStmt) rows.push(['COBOL Stmt', esc(pc.cobolStmt)]);
+
+  const rowsHtml = rows.map(([lbl, val]) =>
+    `<div class="rc-row"><span class="rc-label">${lbl}</span><span class="rc-val">${val}</span></div>`
+  ).join('');
+
+  const narr = a.rootNarrative ? `<div class="rc-narrative">${esc(a.rootNarrative)}</div>` : '';
+
+  return `<div class="${boxCls}"><div class="rc-box-title">${title}</div><div class="rc-rows">${rowsHtml}</div>${narr}</div>`;
+}
+
+// ── Technical analysis ────────────────────────────────────────────────────────
+function renderTechnicalAnalysis(a) {
+  const parts = [];
+  const p  = a.pswDecode;
+  const d  = a.instrDecode;
+  const ad = a.abendDetail;
+
+  if (p) {
+    parts.push('<div class="section-hdr">&#9881; PSW Arithmetic — Failing Instruction Location</div>');
+    parts.push('<table class="tech-table">');
+    parts.push(`<tr><td>PSW Word 1</td><td>${esc(p.word1||'—')}</td></tr>`);
+    parts.push(`<tr><td>PSW Word 2</td><td>${esc(p.word2||'—')}</td></tr>`);
+    parts.push(`<tr><td>Addressing Mode</td><td>${esc(p.addressMode||'—')}</td></tr>`);
+    parts.push(`<tr class="hl"><td>Next Instruction Addr</td><td>X'${esc(p.nextInstHex||'?')}'</td></tr>`);
+    parts.push(`<tr class="hl"><td>Failing Instruction</td><td>X'${esc(p.failInstHex||'?')}' &nbsp;(PSW &minus; ILC ${esc(p.ilc||0)})</td></tr>`);
+    if (p.moduleOffset) parts.push(`<tr><td>Offset in Module</td><td>X'${esc(p.moduleOffset)}'</td></tr>`);
+    parts.push(`<tr><td>ILC (bytes)</td><td>${esc(p.ilc||'—')} bytes</td></tr>`);
+    parts.push('</table>');
+  }
+
+  if (d) {
+    parts.push('<div class="section-hdr">&#128290; Machine Instruction at Abend</div>');
+    if (d.fromMeta) {
+      parts.push(`<div class="instr-box">
+        <div class="instr-raw">${esc(d.mnem||'???')}</div>
+        <div class="instr-dr"><span class="instr-key">Mnemonic</span><span class="instr-val">${esc(d.mnem||'')} — ${esc(d.desc||'')}</span></div>
+        <div class="instr-detail">This instruction type triggers the ${esc(a.abendCode)} interrupt on packed-decimal operand errors.</div>
+      </div>`);
+    } else {
+      const fmtStr = d.formatted || d.raw || '';
+      parts.push(`<div class="instr-box">
+        <div class="instr-raw">${esc(fmtStr)}</div>
+        <div class="instr-dr"><span class="instr-key">Opcode</span><span class="instr-val">${esc(d.opcode||'')} = ${esc(d.mnem||'')} &mdash; ${esc(d.desc||'')}</span></div>
+        <div class="instr-dr"><span class="instr-key">Format</span><span class="instr-val">${esc(d.fmt||'—')}</span></div>
+        ${d.operand1?`<div class="instr-dr"><span class="instr-key">Operand 1</span><span class="instr-val">${esc(d.operand1)}</span></div>`:''}
+        ${d.operand2?`<div class="instr-dr"><span class="instr-key">Operand 2</span><span class="instr-val">${esc(d.operand2)}</span></div>`:''}
+        ${d.decode?`<div class="instr-dr"><span class="instr-key">Decode</span><span class="instr-val">${esc(d.decode)}</span></div>`:''}
+        ${d.detail?`<div class="instr-detail">${esc(d.detail)}</div>`:''}
+      </div>`);
+    }
+  }
+
+  if (ad) {
+    parts.push('<div class="section-hdr">&#128269; Abend Technical Detail</div>');
+    parts.push(`<table class="tech-table">
+      <tr><td>INTCODE (hex)</td><td>${esc(ad.intcode||'—')}</td></tr>
+      <tr><td>Trigger Instructions</td><td>${esc((ad.triggerInstr||[]).join(', '))}</td></tr>
+      <tr><td>COBOL Data Types</td><td>${esc(ad.cobolTypes||'—')}</td></tr>
+    </table>`);
+    parts.push(`<div class="abend-techbox">${esc(ad.techDesc||'')}</div>`);
+  }
+
+  return parts.join('');
+}
+
+// ── Fix recommendations ───────────────────────────────────────────────────────
+function renderFixRecommendations(a) {
+  const parts = ['<div class="section-hdr">&#128295; Fix Recommendations</div>'];
+
+  if (a.immediateSteps && a.immediateSteps.length) {
+    parts.push('<div class="fix-sublabel orange">Immediate Action — Restart Steps</div>');
+    a.immediateSteps.forEach((step, i) => {
+      parts.push(`<div class="step-item"><span class="step-num">${i+1}</span><span class="step-text">${esc(step)}</span></div>`);
+    });
+  }
+
+  if (a.cobolFix) {
+    parts.push('<div class="fix-sublabel green" style="margin-top:16px;">Permanent Code Fix — COBOL</div>');
+    parts.push(`<pre class="cobol-fix-block">${esc(a.cobolFix)}</pre>`);
+  }
+
+  if (a.upstreamFix) {
+    parts.push('<div class="fix-sublabel blue">Upstream / ETL Recommendation</div>');
+    parts.push(`<div class="upstream-note">${esc(a.upstreamFix)}</div>`);
+  }
+
+  return parts.join('');
+}
+
+// ── Integrity flags ───────────────────────────────────────────────────────────
+function renderIntegrityFlags(flags) {
+  const parts = ['<div class="section-hdr">&#9888; Dump Integrity Flags</div>'];
+  flags.forEach(f => {
+    const icon = f.level === 'warn' ? '&#9888;' : '&#8505;';
+    parts.push(`<div class="int-flag ${esc(f.level)}"><span class="int-icon">${icon}</span><span class="int-msg">${esc(f.msg)}</span></div>`);
+  });
+  return parts.join('');
+}
+
+// ── Utilities ─────────────────────────────────────────────────────────────────
+function esc(s) {
+  return String(s==null?'':s)
+    .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+function escHtml(s) { return esc(s); }
+</script>
+</body>
+</html>
